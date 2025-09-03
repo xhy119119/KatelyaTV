@@ -626,6 +626,8 @@ const VideoSourceConfig = ({
   const [sources, setSources] = useState<DataSource[]>([]);
   const [showAddForm, setShowAddForm] = useState(false);
   const [orderChanged, setOrderChanged] = useState(false);
+  const [batchMode, setBatchMode] = useState(false);
+  const [selectedSources, setSelectedSources] = useState<Set<string>>(new Set());
   const [newSource, setNewSource] = useState<DataSource>({
     name: '',
     key: '',
@@ -719,6 +721,79 @@ const VideoSourceConfig = ({
       .catch(() => {
         console.error('操作失败', 'add', newSource);
       });
+  };
+
+  // 批量操作相关函数
+  const handleToggleBatchMode = () => {
+    setBatchMode(!batchMode);
+    setSelectedSources(new Set()); // 切换模式时清空选择
+  };
+
+  const handleSelectSource = (key: string, checked: boolean) => {
+    const newSelected = new Set(selectedSources);
+    if (checked) {
+      newSelected.add(key);
+    } else {
+      newSelected.delete(key);
+    }
+    setSelectedSources(newSelected);
+  };
+
+  const handleSelectAll = (checked: boolean) => {
+    if (checked) {
+      // 选择所有视频源（包括示例源）
+      setSelectedSources(new Set(sources.map(source => source.key)));
+    } else {
+      setSelectedSources(new Set());
+    }
+  };
+
+  const handleBatchDelete = async () => {
+    if (selectedSources.size === 0) {
+      showError('请先选择要删除的视频源');
+      return;
+    }
+
+    const selectedArray = Array.from(selectedSources);
+    const result = await Swal.fire({
+      title: '⚡ 一键批量删除',
+      html: `
+        <p>即将<strong>瞬间删除</strong> ${selectedArray.length} 个视频源</p>
+        <p class="text-sm text-gray-600 mt-2">包含所有选中的视频源（含示例源）</p>
+        <p class="text-red-600 font-semibold mt-2">⚠️ 此操作不可撤销！</p>
+      `,
+      icon: 'warning',
+      showCancelButton: true,
+      confirmButtonText: '⚡ 瞬间删除',
+      cancelButtonText: '取消',
+      confirmButtonColor: '#ef4444',
+      cancelButtonColor: '#6b7280',
+      showLoaderOnConfirm: true,
+      allowOutsideClick: () => !Swal.isLoading(),
+      preConfirm: async () => {
+        try {
+          // 并行删除所有选中的视频源，实现真正的一键删除
+          const deletePromises = selectedArray.map(key => 
+            callSourceApi({ action: 'delete', key })
+          );
+          
+          await Promise.all(deletePromises);
+          return { success: true, count: selectedArray.length };
+        } catch (error) {
+          Swal.showValidationMessage(
+            `删除失败: ${error instanceof Error ? error.message : '未知错误'}`
+          );
+          return false;
+        }
+      }
+    });
+
+    if (result.isConfirmed && result.value) {
+      showSuccess(`⚡ 瞬间删除成功！已删除 ${result.value.count} 个视频源`);
+      setSelectedSources(new Set());
+      setBatchMode(false);
+      await refreshConfig();
+    }
   };
 
   // 导出配置
@@ -905,6 +980,7 @@ const VideoSourceConfig = ({
         style={style}
         className='hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors select-none'
       >
+        {/* 拖拽手柄 */}
         <td
           className='px-2 py-4 cursor-grab text-gray-400'
           style={{ touchAction: 'none' }}
@@ -913,6 +989,18 @@ const VideoSourceConfig = ({
         >
           <GripVertical size={16} />
         </td>
+        
+        {/* 批量选择复选框 */}
+        {batchMode && (
+          <td className='px-4 py-4 whitespace-nowrap'>
+            <input
+              type='checkbox'
+              checked={selectedSources.has(source.key)}
+              onChange={(e) => handleSelectSource(source.key, e.target.checked)}
+              className='w-4 h-4 text-blue-600 bg-gray-100 border-gray-300 rounded focus:ring-blue-500 dark:focus:ring-blue-600 dark:ring-offset-gray-800 focus:ring-2 dark:bg-gray-700 dark:border-gray-600'
+            />
+          </td>
+        )}
         <td className='px-6 py-4 whitespace-nowrap text-sm text-gray-900 dark:text-gray-100'>
           {source.name}
         </td>
@@ -953,14 +1041,12 @@ const VideoSourceConfig = ({
           >
             {!source.disabled ? '禁用' : '启用'}
           </button>
-          {source.from !== 'config' && (
-            <button
-              onClick={() => handleDelete(source.key)}
-              className='inline-flex items-center px-3 py-1.5 rounded-full text-xs font-medium bg-gray-100 text-gray-800 hover:bg-gray-200 dark:bg-gray-700/40 dark:hover:bg-gray-700/60 dark:text-gray-200 transition-colors'
-            >
-              删除
-            </button>
-          )}
+          <button
+            onClick={() => handleDelete(source.key)}
+            className='inline-flex items-center px-3 py-1.5 rounded-full text-xs font-medium bg-gray-100 text-gray-800 hover:bg-gray-200 dark:bg-gray-700/40 dark:hover:bg-gray-700/60 dark:text-gray-200 transition-colors'
+          >
+            删除
+          </button>
         </td>
       </tr>
     );
@@ -976,40 +1062,79 @@ const VideoSourceConfig = ({
 
   return (
     <div className='space-y-6'>
-      {/* 添加视频源表单 */}
-      <div className='flex items-center justify-between flex-wrap gap-2'>
+      {/* 视频源管理工具栏 */}
+      <div className='flex items-center justify-between flex-wrap gap-3'>
         <h4 className='text-sm font-medium text-gray-700 dark:text-gray-300'>
           视频源列表
         </h4>
+        
         <div className='flex items-center gap-2 flex-wrap'>
-          {/* 导入按钮 */}
-          <label className='relative'>
-            <input
-              type='file'
-              accept='.json'
-              onChange={handleImportConfig}
-              className='absolute inset-0 w-full h-full opacity-0 cursor-pointer'
-            />
-            <span className='inline-flex items-center px-3 py-1 bg-blue-600 hover:bg-blue-700 text-white text-sm rounded-lg transition-colors cursor-pointer'>
-              📂 导入配置
-            </span>
-          </label>
-          
-          {/* 导出按钮 */}
-          <button
-            onClick={handleExportConfig}
-            className='inline-flex items-center px-3 py-1 bg-green-600 hover:bg-green-700 text-white text-sm rounded-lg transition-colors'
-          >
-            📤 导出配置
-          </button>
-          
-          {/* 添加视频源按钮 */}
-          <button
-            onClick={() => setShowAddForm(!showAddForm)}
-            className='px-3 py-1 bg-orange-600 hover:bg-orange-700 text-white text-sm rounded-lg transition-colors'
-          >
-            {showAddForm ? '取消' : '➕ 添加视频源'}
-          </button>
+          {/* 批量操作区域 */}
+          {!batchMode ? (
+            <>
+              {/* 普通模式按钮 */}
+              <button
+                onClick={handleToggleBatchMode}
+                className='inline-flex items-center px-3 py-1 bg-purple-600 hover:bg-purple-700 text-white text-sm rounded-lg transition-colors'
+              >
+                ☑️ 批量选择
+              </button>
+              
+              {/* 导入导出按钮 */}
+              <div className='flex items-center gap-1 border-l border-gray-300 dark:border-gray-600 pl-2'>
+                <label className='relative'>
+                  <input
+                    type='file'
+                    accept='.json'
+                    onChange={handleImportConfig}
+                    className='absolute inset-0 w-full h-full opacity-0 cursor-pointer'
+                  />
+                  <span className='inline-flex items-center px-3 py-1 bg-blue-600 hover:bg-blue-700 text-white text-sm rounded-lg transition-colors cursor-pointer'>
+                    📂 导入
+                  </span>
+                </label>
+                
+                <button
+                  onClick={handleExportConfig}
+                  className='inline-flex items-center px-3 py-1 bg-green-600 hover:bg-green-700 text-white text-sm rounded-lg transition-colors'
+                >
+                  📤 导出
+                </button>
+              </div>
+              
+              {/* 添加视频源按钮 */}
+              <button
+                onClick={() => setShowAddForm(!showAddForm)}
+                className='px-3 py-1 bg-orange-600 hover:bg-orange-700 text-white text-sm rounded-lg transition-colors'
+              >
+                {showAddForm ? '取消' : '➕ 添加'}
+              </button>
+            </>
+          ) : (
+            <>
+              {/* 批量模式按钮 */}
+              <button
+                onClick={handleToggleBatchMode}
+                className='inline-flex items-center px-3 py-1 bg-gray-600 hover:bg-gray-700 text-white text-sm rounded-lg transition-colors'
+              >
+                ❌ 退出批量
+              </button>
+              
+              <div className='flex items-center gap-1 border-l border-gray-300 dark:border-gray-600 pl-2'>
+                <span className='text-xs text-gray-500 dark:text-gray-400'>
+                  已选 {selectedSources.size} 个
+                </span>
+                
+                <button
+                  onClick={handleBatchDelete}
+                  disabled={selectedSources.size === 0}
+                  className='inline-flex items-center px-3 py-1 bg-red-600 hover:bg-red-700 disabled:bg-gray-400 text-white text-sm rounded-lg transition-colors'
+                >
+                  🗑️ 批量删除
+                </button>
+              </div>
+            </>
+          )}
         </div>
       </div>
 
@@ -1070,7 +1195,21 @@ const VideoSourceConfig = ({
         <table className='min-w-full divide-y divide-gray-200 dark:divide-gray-700'>
           <thead className='bg-gray-50 dark:bg-gray-900'>
             <tr>
+              {/* 拖拽手柄列 */}
               <th className='w-8' />
+              
+              {/* 批量选择列 */}
+              {batchMode && (
+                <th className='w-12 px-4 py-3'>
+                  <input
+                    type='checkbox'
+                    checked={selectedSources.size > 0 && selectedSources.size === sources.length}
+                    onChange={(e) => handleSelectAll(e.target.checked)}
+                    className='w-4 h-4 text-blue-600 bg-gray-100 border-gray-300 rounded focus:ring-blue-500 dark:focus:ring-blue-600 dark:ring-offset-gray-800 focus:ring-2 dark:bg-gray-700 dark:border-gray-600'
+                  />
+                </th>
+              )}
+              
               <th className='px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider'>
                 名称
               </th>
